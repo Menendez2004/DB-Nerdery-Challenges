@@ -10,38 +10,24 @@ GROUP BY
 ORDER BY
     type ASC;
 
-
-
 -- 2
--- SELECT 
---     user_id,
---     COUNT(*) AS current_account_count
--- FROM 
---     accounts
--- WHERE 
---     type = 'CURRENT_ACCOUNT'
--- GROUP BY 
---     user_id
--- HAVING 
---     COUNT(*) >=2; posible solution cuzz returns the user_id and the number of current accounts
-
-
-
+WITH eligible_users AS (
+    SELECT
+        user_id
+    FROM
+        accounts
+    WHERE
+        type = 'CURRENT_ACCOUNT'
+    GROUP BY
+        user_id
+    HAVING
+        COUNT(*) >= 2
+)
 SELECT
     COUNT(*) AS total_users
 FROM
-    (
-        SELECT
-            user_id
-        FROM
-            accounts
-        WHERE
-            type = 'CURRENT_ACCOUNT'
-        GROUP BY
-            user_id
-        HAVING
-            COUNT(*) >= 2
-    );
+    eligible_users;
+
 
 -- 3
 SELECT
@@ -56,20 +42,22 @@ LIMIT
     5;
 
 -- 4
-SELECT
-    user_id,
-    account_id,
-    SUM(mount) AS total_money
-FROM
-    accounts
-GROUP BY
-    account_id,
-    user_id
-ORDER BY
-    total_money DESC
-LIMIT
-    3;
 
+SELECT 
+    usr.id AS user_uuid, 
+    SUM(CASE 
+            WHEN mov.type = 'IN' THEN mov.mount 
+            WHEN mov.type IN ('OUT', 'TRANSFER', 'OTHER') THEN -mov.mount 
+            ELSE 0 
+        END) + SUM(act.mount) AS final_balance
+FROM users usr
+INNER JOIN accounts act 
+    ON usr.id = act.user_id
+INNER JOIN movements mov
+    ON mov.account_from = act.id
+GROUP BY usr.id
+ORDER BY final_balance DESC
+LIMIT 3;
 
 
 
@@ -86,12 +74,6 @@ SELECT
             WHEN m.account_to = a.id THEN m.mount  
         END
     )) AS final_account_amount,
-    ARRAY_AGG(ROW(
-        m.type, 
-        m.account_from, 
-        m.account_to, 
-        m.mount
-    )) AS movements
 FROM 
     accounts a
 INNER JOIN 
@@ -109,9 +91,9 @@ GROUP BY
 --(B) Add a new movement with the information: from: 3b79e403-c788-495a-a8ca-86ad7643afaf make a transfer to fd244313-36e5-4a17-a27c-f8265bc46590 mount: 50.75
 DO $$ 
 DECLARE
-    first_account UUID := '3b79e403-c788-495a-a8ca-86ad7643afaf';
-    second_account UUID := 'fd244313-36e5-4a17-a27c-f8265bc46590';
-    transfer_amount NUMERIC := 80;
+    issuing_account UUID := '3b79e403-c788-495a-a8ca-86ad7643afaf';
+    receiving_account UUID := 'fd244313-36e5-4a17-a27c-f8265bc46590';
+    transfer_amount NUMERIC := 50.75;
 BEGIN
 
     UPDATE accounts
@@ -126,15 +108,15 @@ BEGIN
     VALUES (
         gen_random_uuid(),  
         'TRANSFER',         
-        first_account,      
-        second_account,     
+        issuing_account,      
+        receiving_account,     
         transfer_amount,    
         NOW(),              
         NOW()               
     );
 
-    RAISE NOTICE 'Transferencia completada de % a % con un monto de %', 
-                 first_account, second_account, transfer_amount;
+    RAISE NOTICE 'Transaction completed from % to % with the amount of %', 
+                issuing_account, receiving_account, transfer_amount;
 END $$;
 
 
@@ -150,7 +132,7 @@ SELECT
     m.mount AS transferred_amount
 FROM movements m
 WHERE m.account_from = '3b79e403-c788-495a-a8ca-86ad7643afaf'
-   OR m.account_to = '3b79e403-c788-495a-a8ca-86ad7643afaf'
+    OR m.account_to = '3b79e403-c788-495a-a8ca-86ad7643afaf'
 ORDER BY m.created_at ASC;
 
 
@@ -159,64 +141,69 @@ ORDER BY m.created_at ASC;
 DO $$ 
 DECLARE
     current_balance NUMERIC;
-	first_account UUID:= '3b79e403-c788-495a-a8ca-86ad7643afaf';
+	affected_account UUID:= '3b79e403-c788-495a-a8ca-86ad7643afaf';
 	out_amount NUMERIC := 731823.56;
 BEGIN
 
     SELECT a.mount INTO current_balance
     FROM accounts a
-    WHERE a.id = first_account;
+    WHERE a.id = affected_account;
 
     IF current_balance < out_amount THEN
-        RAISE EXCEPTION 'Saldo insuficiente para realizar el movimiento, transacción rechazada';
+        RAISE EXCEPTION 'Insufficient balance to do the movement, Transaction rejected';
     END IF;
 
     INSERT INTO movements (id, type, account_from, account_to, mount, created_at, updated_at)
     VALUES (
         gen_random_uuid(),
         'OUT', 
-        first_account,
+        affected_account,
 		NULL,
-		out_amount,
+		-- out_amount, --5.e you need to pass less money or
         now(),
         now()
     );
 	
 EXCEPTION
 WHEN OTHERS THEN
-    RAISE NOTICE '*** Error procesando la transacción con monto %. Saldo disponible: % % ** Haciendo ROLLBACK **', 
-                 out_amount, current_balance, CHR(10);
+    RAISE NOTICE '*** Error processing the transaction %. current balance: % % ** Doing ROLLBACK **', 
+                out_amount, current_balance, CHR(10);
     ROLLBACK;
     RETURN;
 
-END $$;
 
---(d). Put your answer here if the transaction fails(YES/NO): Yes  the  is failed cuz the mount is higher than the current balance 
+--( f). f. Once the transaction is correct, make a commit
+END $$; --> the same as commit
 
---(e and f). If the transaction fails, make the correction on step c to avoid the failure (the way to avoid the failure is tranfer less money than the current balance)
 
 
 --(g) How much money the account fd244313-36e5-4a17-a27c-f8265bc46590 have:
 
-SELECT 
-    a.id AS account_id,
-    a.mount + 
-	SUM(
-        CASE 
-            WHEN m.account_from = a.id THEN -m.mount 
-            WHEN m.account_to = a.id THEN m.mount  
-        END
-    )AS total_money
-FROM 
-    accounts a
-INNER JOIN 
-    movements m
-ON 
-    a.id IN (m.account_from, m.account_to)
-WHERE 
-    a.id IN ('fd244313-36e5-4a17-a27c-f8265bc46590')
-GROUP BY 
-    a.id, a.mount;
+CREATE FUNCTION get_user_balance(account_id UUID)
+RETURNS DOUBLE PRECISION AS $$
+DECLARE
+    final_balance DOUBLE PRECISION;
+BEGIN
+    SELECT 
+        SUM(CASE 
+                WHEN mov.type = 'IN' THEN mov.mount 
+                WHEN mov.type IN ('OUT', 'TRANSFER', 'OTHER') THEN -mov.mount 
+                ELSE 0 
+            END) + SUM(act.mount)
+    INTO final_balance
+    FROM users usr
+    INNER JOIN accounts act 
+        ON usr.id = act.user_id
+    INNER JOIN movements mov
+        ON mov.account_from = act.id
+    WHERE usr.id = user_id
+    GROUP BY usr.id;
+    RETURN final_balance;
+END;
+$$ LANGUAGE plpgsql;
+
+
+SELECT get_user_balance('fd244313-36e5-4a17-a27c-f8265bc46590') AS net_balance; --<==== directly the net balance of the account
 
 
 -- 6
@@ -288,3 +275,4 @@ WHERE
 ORDER BY 
     a.type ASC,
     m.created_at ASC;
+
